@@ -313,6 +313,14 @@ local function OnHide(self)
 	end
 end
 
+-- Default availability = the class/spec restrictions from RegisterModule.
+-- Modules override moduleCanUse for cases the class/spec gate can't express (e.g. combo points).
+local function defaultModuleCanUse(module, frame, playerSpec)
+	if( module.moduleClass and module.moduleClass ~= playerClass ) then return false end
+	if( module.moduleSpec and module.moduleSpec[playerSpec] ~= true ) then return false end
+	return true
+end
+
 -- Deal with enabling modules inside a zone
 local function SetVisibility(self)
 	local layoutUpdate
@@ -360,11 +368,8 @@ local function SetVisibility(self)
 				end
 			end
 
-			-- Force disable modules for people who aren't the appropriate class
-			if( module.moduleClass and module.moduleClass ~= playerClass ) then
-				enabled = nil
-			-- Force disable if they aren't the appropriate spec
-			elseif( module.moduleSpec and module.moduleSpec[playerSpec] ~= true ) then
+			-- Disable if the module isn't usable by this class/spec (moduleCanUse defaults to the class/spec gate)
+			if( enabled and not (module.moduleCanUse or defaultModuleCanUse)(module, self, playerSpec) ) then
 				enabled = nil
 			end
 

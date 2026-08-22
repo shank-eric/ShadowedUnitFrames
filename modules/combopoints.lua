@@ -21,6 +21,11 @@ function Combo:GetComboPointType()
 	return "comboPoints"
 end
 
+-- Only specs with combo points (Rogue, Feral Druid); UnitPowerMax is 0 for the rest
+function Combo:moduleCanUse(frame)
+	return UnitPowerMax("player", cpConfig.powerType) > 0
+end
+
 function Combo:GetPoints(unit)
 	-- For Malygos dragons, they also self cast their CP on themselves, which is why we check CP on ourself
 	if( UnitHasVehicleUI("player") and UnitHasVehiclePlayerFrameUI("player") ) then
