@@ -96,6 +96,21 @@ local function SafeIsSpellInRange(spell, unit)
     return res == 1
 end
 
+-- Coerce a possibly-secret boolean without erroring; false when it can't be read.
+local function SafeBool(v)
+    local ok, res = pcall(function() return v and true or false end)
+    return ok and res
+end
+
+-- Only push the alpha through when it actually changed, to skip redundant
+-- SetAlpha calls. Cache in _rangeLastAlpha (SetRangeAlpha owns .rangeAlpha).
+local function applyRangeAlpha(frame, alpha)
+    if frame._rangeLastAlpha ~= alpha then
+        frame._rangeLastAlpha = alpha
+        frame:SetRangeAlpha(alpha)
+    end
+end
+
 
 local function checkRange(self)
     local frame = self.parent
@@ -111,7 +126,7 @@ local function checkRange(self)
     end
 
     if (not UnitIsConnected(frame.unitSUF)) or UnitPhaseReason(frame.unitSUF) then
-        frame:SetRangeAlpha(oorAlpha)
+        applyRangeAlpha(frame, oorAlpha)
         return
     end
 
@@ -119,31 +134,54 @@ local function checkRange(self)
     if spell then
         local inRange = SafeIsSpellInRange(spell, frame.unitSUF)
         if inRange ~= nil then
-            frame:SetRangeAlpha(inRange and inAlpha or oorAlpha)
+            applyRangeAlpha(frame, inRange and inAlpha or oorAlpha)
             return
         end
         -- nil = inconclusive (e.g. C_Spell.IsSpellInRange returns nil for raidN tokens)
         -- Fall through to UnitInRange for group members
     end
 
-    -- Fallback: UnitInRange for group members (handles secret booleans via SetAlphaFromBoolean)
+    -- Fallback: UnitInRange for group members
     if not ShadowUF.IsUnitIdentitySecret(frame.unitSUF) and (UnitInRaid(frame.unitSUF) or UnitInParty(frame.unitSUF)) then
-        local ok, inRange = pcall(UnitInRange, frame.unitSUF)
+        local ok, inRange, checkedRange = pcall(UnitInRange, frame.unitSUF)
         if ok and not frame.disableRangeAlpha then
-            if frame.SetAlphaFromBoolean then
-                frame:SetAlphaFromBoolean(inRange, inAlpha, oorAlpha)
-            else
-                frame:SetRangeAlpha(SafeAlphaFromBool(inRange, inAlpha, oorAlpha))
+            local secret = issecretvalue and (issecretvalue(inRange) or issecretvalue(checkedRange))
+            if secret then
+                -- Combat: the range booleans are secret. SetAlphaFromBoolean sets
+                -- alpha from the secret without reading it. Can't no-op cache a
+                -- value we can't see, so invalidate the cache.
+                if frame.SetAlphaFromBoolean then
+                    frame:SetAlphaFromBoolean(inRange, inAlpha, oorAlpha)
+                    frame._rangeLastAlpha = nil
+                    return
+                end
+            elseif SafeBool(checkedRange) then
+                -- Readable: checkedRange true means the unit was really tested, so
+                -- a false inRange is meaningful. Safe to no-op cache.
+                applyRangeAlpha(frame, SafeAlphaFromBool(inRange, inAlpha, oorAlpha))
+                return
             end
-        elseif not ok then
-            frame:SetRangeAlpha(inAlpha)
+            -- checkedRange readable-false = untestable unit: fall through.
         end
-        -- When disableRangeAlpha (fader active): skip, next tick after release will reapply.
+        -- Not ok or fader active: fall through, next tick after release reapplies.
+    end
+
+    if InCombatLockdown() then
+        applyRangeAlpha(frame, inAlpha)
         return
     end
 
-    -- Default
-    frame:SetRangeAlpha(inAlpha)
+    -- Fallback: CheckInteractDistance for non-group units (friendly NPCs, etc.)
+    -- distIndex 4 ~ 28 yards
+    -- Returns 1 when in range, nil when out of range or the check isn't available
+    local ok, inDist = pcall(CheckInteractDistance, frame.unitSUF, 4)
+    if ok and inDist ~= nil then
+        applyRangeAlpha(frame, inDist and inAlpha or oorAlpha)
+        return
+    end
+
+    -- Interact distance unavailable (nil/errored): default to visible
+    applyRangeAlpha(frame, inAlpha)
 end
 
 local function updateSpellCache(category)
@@ -200,6 +238,9 @@ local function createTimer(frame)
 		-- Lightweight stub compatible with checkRange(self) reading self.parent
 		frame.range.timer = {parent = frame}
 	end
+	-- Force the next check to apply: the frame's alpha may have been changed
+	-- elsewhere (OnDisable reset, layout, fader release) since we last ran.
+	frame._rangeLastAlpha = nil
 	rangeFrames[frame] = true
 	ensureSharedTicker()
 end
